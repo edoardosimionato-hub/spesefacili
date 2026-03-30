@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>SpeseFacili - Gestione Spese</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💰</text></svg>">
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>const GEMINI_KEY='AIzaSyC-En_4BsLGPTh-GtQt29mVo2tWIS2s5hw';</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
@@ -772,40 +772,41 @@ async function doOCR(input){
   const fill=document.getElementById('ocrFill'),txt=document.getElementById('ocrTxt');
   fill.style.width='10%';txt.textContent='Caricamento immagine...';
   try{
-    fill.style.width='30%';txt.textContent='Inizializzazione OCR...';
-    const res=await Tesseract.recognize(file,'ita+eng',{logger:m=>{
-      if(m.status==='recognizing text'){fill.style.width=(30+m.progress*60)+'%';txt.textContent=`Riconoscimento testo... ${Math.round(m.progress*100)}%`}}});
-    fill.style.width='95%';txt.textContent='Analisi risultati...';
-    const d=parseReceipt(res.data.text);
+    const base64=await new Promise((resolve)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result.split(',')[1]);
+      reader.readAsDataURL(file);
+    });
+    fill.style.width='30%';txt.textContent='Invio a Gemini AI...';
+    const cats=Object.keys(CATS).join(', ');
+    const body={contents:[{parts:[
+      {text:`Analizza questa foto di uno scontrino/ricevuta. Rispondi SOLO con un JSON valido (senza markdown) con questi campi:
+- "amount": numero totale speso (il totale finale, non subtotali). Usa il punto come separatore decimale.
+- "description": breve descrizione del negozio/esercizio e cosa è stato acquistato (max 50 caratteri)
+- "category": una tra queste categorie: ${cats}
+- "date": data dello scontrino in formato YYYY-MM-DD (se visibile, altrimenti null)
+Esempio: {"amount":25.50,"description":"Bar Roma - 2 caffè e brioche","category":"lunch","date":"2024-03-15"}`},
+      {inline_data:{mime_type:file.type,data:base64}}
+    ]}]};
+    fill.style.width='60%';txt.textContent='Analisi AI in corso...';
+    const resp=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const json=await resp.json();
+    if(!resp.ok)throw new Error(json.error?.message||'Errore API');
+    const raw=json.candidates[0].content.parts[0].text;
+    const cleaned=raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+    const d=JSON.parse(cleaned);
     fill.style.width='100%';txt.textContent='Completato!';
     setTimeout(()=>{
       document.getElementById('ocrRes').style.display='block';
       document.getElementById('ocrAmt').value=d.amount||'';
       document.getElementById('ocrDesc').value=d.description||'';
-      document.getElementById('ocrDate').valueAsDate=new Date();
+      if(d.date)document.getElementById('ocrDate').value=d.date;
+      else document.getElementById('ocrDate').valueAsDate=new Date();
       if(d.category)pickCat(d.category,'o');
-      toast('🎉','Scontrino analizzato!');
+      toast('🎉','Scontrino analizzato con AI!');
     },400);
-  }catch(err){console.error(err);txt.textContent='Errore. Riprova.';fill.style.width='0%';toast('❌','Errore scansione')}
-}
-
-function parseReceipt(text){
-  const r={amount:null,description:'',category:'other'};
-  const patterns=[/(?:totale|total[ie]?|tot\.?|importo|dovuto|pagamento|pagare)\s*[:=€]?\s*€?\s*(\d+[.,]\d{2})/gi,/€\s*(\d+[.,]\d{2})/g,/(\d+[.,]\d{2})\s*€/g,/(\d+[.,]\d{2})/g];
-  let amts=[];
-  for(const p of patterns){let m;while((m=p.exec(text))!==null)amts.push(parseFloat(m[1].replace(',','.')));if(amts.length)break}
-  if(amts.length)r.amount=Math.max(...amts);
-  const l=text.toLowerCase();
-  if(/carburant|benzin|diesel|gasolio|eni|q8|ip |shell|total erg/i.test(l))r.category='fuel';
-  else if(/ristorante|trattoria|pizzeria|bar |caffè|pranzo|menu|coperto/i.test(l))r.category='lunch';
-  else if(/telepass|pedaggio|autostrad/i.test(l))r.category='telepass';
-  else if(/hotel|albergo|b&b|booking|check.?in/i.test(l))r.category='hotel';
-  else if(/taxi|uber|treno|trenitalia|italo|bus/i.test(l))r.category='transport';
-  else if(/parcheggio|parking|sosta/i.test(l))r.category='parking';
-  else if(/supermercato|conad|coop|esselunga|lidl|eurospin|carrefour/i.test(l))r.category='grocery';
-  const lines=text.split('\n').map(x=>x.trim()).filter(x=>x.length>3);
-  if(lines.length)r.description=lines[0].substring(0,50);
-  return r;
+  }catch(err){console.error(err);txt.textContent='Errore: '+err.message;fill.style.width='0%';toast('❌','Errore analisi')}
 }
 
 function saveOCR(){
